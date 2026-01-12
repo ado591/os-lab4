@@ -32,7 +32,7 @@ struct inode_operations vtfs_inode_ops = {
 };
 
 struct file_operations vtfs_dir_ops = {
- .iterate = vtfs_iterate,
+ .iterate_shared = vtfs_iterate,
 };
 
 struct file_operations vtfs_file_ops = {
@@ -294,7 +294,7 @@ int vtfs_rmdir(struct inode *parent_inode, struct dentry *child_dentry) {
     struct vtfs_file_info *dir_info, *tmp;
     struct inode *dir_inode = d_inode(child_dentry);
     
-    if (!simple_empty_dir(child_dentry))
+    if (!simple_empty(child_dentry))
         return -ENOTEMPTY;
     
     list_for_each_entry_safe(dir_info, tmp, &vtfs_files, list) {

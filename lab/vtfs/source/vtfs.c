@@ -36,7 +36,6 @@ struct file_operations vtfs_dir_ops = {
 };
 
 struct file_operations vtfs_file_ops = {
-    .open = simple_open,
     .read = vtfs_read,
     .write = vtfs_write,
 };
@@ -339,10 +338,6 @@ ssize_t vtfs_read(struct file *filp, char __user *buffer, size_t length, loff_t 
         return -ENOENT;
     }
 
-    if (!file_info->content.raw_data && file_info->content.buff_size > 0) {
-        mutex_unlock(&file_info->lock);
-        return -EIO;
-    }
 
     mutex_lock(&file_info->lock);
     
@@ -380,11 +375,6 @@ ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, 
 
     if (!file_info) {
         return -ENOENT;
-    }
-
-    if (!file_info->content.raw_data && file_info->content.buff_size > 0) {
-        mutex_unlock(&file_info->lock);
-        return -EIO;
     }
 
     mutex_lock(&file_info->lock);

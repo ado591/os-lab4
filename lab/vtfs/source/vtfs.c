@@ -24,19 +24,6 @@ static LIST_HEAD(vtfs_files);
 static int next_ino = 103; // 101 и 102 заняты
 static DEFINE_MUTEX(vtfs_files_lock);
 
-struct vtfs_file_info {
-    char name[256];
-    ino_t ino;
-    ino_t parent_ino;
-    bool is_dir; //все файл
-    struct list_head list;
-    struct mutex lock;
-};
-
-struct file_operations vtfs_file_ops = {
-    .open = simple_open
-    // TODO: read & write
-};
 
 struct file_system_type vtfs_fs_type = {
     .name = "vtfs",
@@ -56,6 +43,28 @@ struct file_operations vtfs_dir_ops = {
  .iterate = vtfs_iterate,
 };
 
+struct file_data {
+    char *raw_data;
+    size_t size;
+    size_t buff_size;
+};
+
+struct vtfs_file_info {
+    char name[256];
+    ino_t ino;
+    ino_t parent_ino;
+    bool is_dir; //все файл
+    struct list_head list;
+    struct mutex lock;
+    struct file_data content;
+};
+
+struct file_operations vtfs_file_ops = {
+    .open = simple_open,
+    .read = vtfs_read,
+    .write = vtfs_write,
+};
+
 // TODO: отправить в заголовочный файл
 //монтирование
 struct dentry* vtfs_mount(struct file_system_type* fs_type, int flags, const char* token, void* data);
@@ -68,11 +77,15 @@ struct dentry* vtfs_lookup(struct inode* parent_inode, struct dentry* child_dent
 // TODO: вынести в utils??
 struct vtfs_file_info *get_file_by_inode(ino_t ino);
 struct vtfs_file_info *find_file_in_dir(const char *name, ino_t parent_ino);
+static int is_ascii_string(const char *buffer, size_t length)
 //работа с файлами
 int vtfs_create(struct mnt_idmap *idmap, struct inode *parent_inode, struct dentry *child_dentry, umode_t mode, bool b);
 int vtfs_unlink(struct inode *parent_inode, struct dentry *child_dentry);
 struct dentry *vtfs_mkdir(struct mnt_idmap *idmap, struct inode *parent_inode, struct dentry *child_dentry, umode_t mode);
 int vtfs_rmdir(struct inode *parent_inode, struct dentry *child_dentry);
+//read & write
+ssize_t vtfs_read(struct file *filp, char __user *buffer, size_t length, loff_t *offset);
+ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, loff_t *offset);
 
 
 static int __init vtfs_init(void) {
@@ -86,13 +99,8 @@ static int __init vtfs_init(void) {
 }
 
 static void __exit vtfs_exit(void) {
-  int code = unregister_filesystem(&vtfs_fs_type);
-  if (code) {
-    LOG("FATAL: cannot unregister filesystem\n");
-  } else {
+    unregister_filesystem(&vtfs_fs_type);
     LOG("VTFS left the kernel\n");
-  }
-  return code;
 }
 
 struct dentry* vtfs_mount(struct file_system_type* fs_type, int flags, const char* token, void* data) {
@@ -142,8 +150,8 @@ void vtfs_kill_sb(struct super_block* sb) {
     struct vtfs_file_info *file_info, *tmp;
     
     list_for_each_entry_safe(file_info, tmp, &vtfs_files, list) {
-        if (file_info->content.data) {
-            kfree(file_info->content.data);
+        if (file_info->content.raw_data) {
+            kfree(file_info->content.raw_data);
         }
         list_del(&file_info->list);
         kfree(file_info);
@@ -231,9 +239,9 @@ int vtfs_create(struct mnt_idmap *idmap, struct inode *parent_inode,
     }
 
     new_file_info->ino = next_ino++;
-    new_file_info->content.data = NULL;
+    new_file_info->content.raw_data = NULL;
     new_file_info->content.size = 0;
-    new_file_info->content.allocated = 0;
+    new_file_info->content.buff_size = 0;
     new_file_info->is_dir = false;
     new_file_info->parent_ino = parent_inode->i_ino;
     mutex_init(&new_file_info->lock);
@@ -266,8 +274,8 @@ int vtfs_unlink(struct inode *parent_inode, struct dentry *child_dentry) {
     
     list_for_each_entry_safe(file_info, tmp, &vtfs_files, list) {
         if (!strcmp(name, file_info->name)) {
-            if (file_info->content.data) {
-                kfree(file_info->content.data);
+            if (file_info->content.raw_data) {
+                kfree(file_info->content.raw_data);
             }
             list_del(&file_info->list);
             kfree(file_info);
@@ -368,6 +376,125 @@ struct vtfs_file_info *find_file_in_dir(const char *name, ino_t parent_ino) {
         }
     }
     return NULL;
+}
+
+ssize_t vtfs_read(struct file *filp, char __user *buffer, size_t length, loff_t *offset) {
+    struct inode *inode = filp->f_inode;
+    struct vtfs_file_info *file_info = get_file_by_inode(inode->i_ino);
+
+    if (!file_info) {
+        return -ENOENT;
+    }
+
+    if (!file_info->content.raw_data && file_info->content.buff_size > 0) {
+        mutex_unlock(&file_info->lock);
+        return -EIO;
+    }
+
+    mutex_lock(&file_info->lock);
+    
+    if (*offset >= file_info->content.size) {
+        mutex_unlock(&file_info->lock);
+        return 0;
+    }
+
+    length = min(length, (size_t)(file_info->content.size - *offset));
+
+    if (copy_to_user(buffer, file_info->content.raw_data + *offset, length)) {
+        mutex_unlock(&file_info->lock);
+        return -EFAULT;
+    }
+
+    *offset += length;
+    
+    mutex_unlock(&file_info->lock);
+    return length;
+}
+
+ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, loff_t *offset) {
+    struct inode *inode = filp->f_inode;
+    struct vtfs_file_info *file_info = get_file_by_inode(inode->i_ino);
+
+    if (!file_info) {
+        return -ENOENT;
+    }
+
+    if (!file_info->content.raw_data && file_info->content.buff_size > 0) {
+        mutex_unlock(&file_info->lock);
+        return -EIO;
+    }
+
+    mutex_lock(&file_info->lock);
+
+    if (*offset == 0) {
+        file_info->content.size = 0;
+        if (file_info->content.raw_data) {
+            memset(file_info->content.raw_data, 0, file_info->content.buff_size);
+        }
+    }
+
+    size_t required_size = *offset + length;
+    
+    if (required_size > file_info->content.buff_size) {
+        size_t new_size = max(required_size, file_info->content.buff_size * 2);
+        if (new_size == 0) 
+            new_size = PAGE_SIZE;
+        
+        char *new_data = krealloc(file_info->content.raw_data, new_size, GFP_KERNEL);
+        if (!new_data) {
+            mutex_unlock(&file_info->lock);
+            return -ENOMEM;
+        }
+        
+        if (new_size > file_info->content.buff_size) {
+            memset(new_data + file_info->content.buff_size, 0, 
+                   new_size - file_info->content.buff_size);
+        }
+        
+        file_info->content.raw_data = new_data;
+        file_info->content.buff_size = new_size;
+    }
+
+    char *tmp_buffer = kmalloc(length, GFP_KERNEL);
+    if (!tmp_buffer) {
+        mutex_unlock(&file_info->lock);
+        return -ENOMEM;
+    }
+
+    if (copy_from_user(tmp_buffer, buffer, length)) {
+        kfree(tmp_buffer);
+        mutex_unlock(&file_info->lock);
+        return -EFAULT;
+    }
+
+    if (is_ascii_string(tmp_buffer, length) != 0) {
+        kfree(tmp_buffer);
+        mutex_unlock(&file_info->lock);
+        return -EINVAL;
+    }
+
+    memcpy(file_info->content.raw_data + *offset, tmp_buffer, length);
+    kfree(tmp_buffer);
+
+    if (required_size > file_info->content.size) {
+        file_info->content.size = required_size;
+    }
+
+    *offset += length;
+    
+    inode_set_mtime_to_ts(inode, current_time(inode)); //время модификации надо сменить
+    mutex_unlock(&file_info->lock);
+    return length;
+}
+
+static int is_ascii_string(const char *buffer, size_t length)
+{
+    for (size_t i = 0; i < length; i++) {
+        if ((unsigned char)buffer[i] > 127) {
+            return -EINVAL;
+        }
+    }
+    return 0;
 }
 
 module_init(vtfs_init);

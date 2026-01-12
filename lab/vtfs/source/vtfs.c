@@ -1,24 +1,16 @@
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/printk.h>
-#include <linux/fs.h>
-#include <linux/mount.h>
-#include <linux/idr.h>
-#include <linux/list.h>
+#include "vtfs.h"
 #include <linux/slab.h>
-#include <linux/mutex.h>
-#include <uaccess.h>
-#include <string.h>
+#include <linux/printk.h>
+#include <linux/string.h>
 #include <linux/time.h>
+#include <linux/stat.h>
+#include <linux/namei.h>
 
-#define MODULE_NAME "vtfs"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Angela Obraztsova P3322");
 MODULE_DESCRIPTION("A simple FS kernel module");
 
-#define LOG(fmt, ...) pr_info("[" MODULE_NAME "]: " fmt, ##__VA_ARGS__)
-#define VTFS_ROOT_INO 101
 
 static LIST_HEAD(vtfs_files);
 static int next_ino = 103; // 101 и 102 заняты
@@ -43,50 +35,11 @@ struct file_operations vtfs_dir_ops = {
  .iterate = vtfs_iterate,
 };
 
-struct file_data {
-    char *raw_data;
-    size_t size;
-    size_t buff_size;
-};
-
-struct vtfs_file_info {
-    char name[256];
-    ino_t ino;
-    ino_t parent_ino;
-    bool is_dir; //все файл
-    struct list_head list;
-    struct mutex lock;
-    struct file_data content;
-};
-
 struct file_operations vtfs_file_ops = {
     .open = simple_open,
     .read = vtfs_read,
     .write = vtfs_write,
 };
-
-// TODO: отправить в заголовочный файл
-//монтирование
-struct dentry* vtfs_mount(struct file_system_type* fs_type, int flags, const char* token, void* data);
-void vtfs_kill_sb(struct super_block* sb);
-int vtfs_fill_super(struct super_block *sb, void *data, int silent);
-//inode
-struct inode* vtfs_get_inode(struct super_block* sb, const struct inode* dir, umode_t mode, int i_ino);
-int vtfs_iterate(struct file* filp, struct dir_context* ctx);
-struct dentry* vtfs_lookup(struct inode* parent_inode, struct dentry* child_dentry, unsigned int flag);
-// TODO: вынести в utils??
-struct vtfs_file_info *get_file_by_inode(ino_t ino);
-struct vtfs_file_info *find_file_in_dir(const char *name, ino_t parent_ino);
-static int is_ascii_string(const char *buffer, size_t length)
-//работа с файлами
-int vtfs_create(struct mnt_idmap *idmap, struct inode *parent_inode, struct dentry *child_dentry, umode_t mode, bool b);
-int vtfs_unlink(struct inode *parent_inode, struct dentry *child_dentry);
-struct dentry *vtfs_mkdir(struct mnt_idmap *idmap, struct inode *parent_inode, struct dentry *child_dentry, umode_t mode);
-int vtfs_rmdir(struct inode *parent_inode, struct dentry *child_dentry);
-//read & write
-ssize_t vtfs_read(struct file *filp, char __user *buffer, size_t length, loff_t *offset);
-ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, loff_t *offset);
-
 
 static int __init vtfs_init(void) {
     int code = register_filesystem(&vtfs_fs_type);
@@ -411,6 +364,16 @@ ssize_t vtfs_read(struct file *filp, char __user *buffer, size_t length, loff_t 
     return length;
 }
 
+static int is_ascii_string(const char *buffer, size_t length)
+{
+    for (size_t i = 0; i < length; i++) {
+        if ((unsigned char)buffer[i] > 127) {
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
 ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, loff_t *offset) {
     struct inode *inode = filp->f_inode;
     struct vtfs_file_info *file_info = get_file_by_inode(inode->i_ino);
@@ -487,15 +450,6 @@ ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, 
     return length;
 }
 
-static int is_ascii_string(const char *buffer, size_t length)
-{
-    for (size_t i = 0; i < length; i++) {
-        if ((unsigned char)buffer[i] > 127) {
-            return -EINVAL;
-        }
-    }
-    return 0;
-}
 
 module_init(vtfs_init);
 module_exit(vtfs_exit);

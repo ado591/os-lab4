@@ -9,7 +9,7 @@
 #include <linux/mutex.h>
 #include <uaccess.h>
 #include <string.h>
-#include <time.h>
+#include <linux/time.h>
 
 #define MODULE_NAME "vtfs"
 
@@ -77,7 +77,7 @@ int vtfs_rmdir(struct inode *parent_inode, struct dentry *child_dentry);
 
 static int __init vtfs_init(void) {
     int code = register_filesystem(&vtfs_fs_type);
-    if (!code) { 
+    if (code) { 
         LOG("FATAL: cannot register filesystem\n");
     } else {
       LOG("VTFS joined the kernel\n");
@@ -87,7 +87,7 @@ static int __init vtfs_init(void) {
 
 static void __exit vtfs_exit(void) {
   int code = unregister_filesystem(&vtfs_fs_type);
-  if (!code) {
+  if (code) {
     LOG("FATAL: cannot unregister filesystem\n");
   } else {
     LOG("VTFS left the kernel\n");

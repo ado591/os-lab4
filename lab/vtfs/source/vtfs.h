@@ -54,5 +54,7 @@ ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, 
 // utils
 struct vtfs_file_info *get_file_by_inode(ino_t ino);
 struct vtfs_file_info *find_file_in_dir(const char *name, ino_t parent_ino);
+//link
+int vtfs_link(struct dentry *old_dentry, struct inode *parent_dir, struct dentry *new_dentry);
 
 #endif

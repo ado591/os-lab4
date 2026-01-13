@@ -29,6 +29,7 @@ struct inode_operations vtfs_inode_ops = {
  .unlink = vtfs_unlink,
  .mkdir = vtfs_mkdir,
  .rmdir = vtfs_rmdir,
+ .link = vtfs_link,
 };
 
 struct file_operations vtfs_dir_ops = {
@@ -438,6 +439,53 @@ ssize_t vtfs_write(struct file *filp, const char __user *buffer, size_t length, 
     inode_set_mtime_to_ts(inode, current_time(inode)); //время модификации надо сменить
     mutex_unlock(&file_info->lock);
     return length;
+}
+
+int vtfs_link(struct dentry *old_dentry, struct inode *parent_dir, struct dentry *new_dentry) {
+    struct inode *old_inode = old_dentry->d_inode;
+    struct vtfs_file_info *old_file_info;
+    struct vtfs_file_info *new_file_info;
+
+    if (!S_ISREG(old_inode->i_mode))
+        return -EPERM;
+
+    mutex_lock(&vtfs_files_lock);
+
+    old_file_info = get_file_by_inode(old_inode->i_ino);
+    if (!old_file_info) {
+        mutex_unlock(&vtfs_files_lock);
+        return -ENOENT;
+    }
+
+    if (find_file_in_dir(new_dentry->d_name.name, parent_dir->i_ino)) {
+        mutex_unlock(&vtfs_files_lock);
+        return -EEXIST;
+    }
+
+    new_file_info = kzalloc(sizeof(*new_file_info), GFP_KERNEL);
+    if (!new_file_info) {
+        mutex_unlock(&vtfs_files_lock);
+        return -ENOMEM;
+    }
+
+
+    strncpy(new_file_info->name, new_dentry->d_name.name, sizeof(new_file_info->name) - 1);
+    new_file_info->ino = old_file_info->ino;
+    new_file_info->parent_ino = parent_dir->i_ino;
+    new_file_info->is_dir = false; //hard links для директорий не делаем
+    new_file_info->content = old_file_info->content;
+    mutex_init(&new_file_info->lock);
+
+    list_add(&new_file_info->list, &vtfs_files);
+    ihold(old_inode);
+    mutex_unlock(&vtfs_files_lock);
+
+    struct inode *new_inode = vtfs_get_inode(parent_dir->i_sb, NULL, old_inode->i_mode, new_file_info->ino);
+    if (!new_inode)
+        return -ENOMEM;
+
+    d_instantiate(new_dentry, new_inode);
+    return 0;
 }
 
 
